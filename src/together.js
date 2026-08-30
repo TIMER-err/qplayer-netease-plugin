@@ -394,14 +394,31 @@ function create(api) {
   }
   function parseInvitation(value) {
     var raw = text(value).trim();
+    if (!raw) return {error: "请输入邀请链接或房间 ID"};
+    if (raw.length > 1024) return {error: "邀请内容过长"};
     var query = raw.indexOf("?") >= 0 ? raw.slice(raw.indexOf("?") + 1) : raw;
     var result = {};
-    query.split("&").forEach(function (part) {
-      var at = part.indexOf("=");
-      if (at > 0) result[decodeURIComponent(part.slice(0, at))]
-        = decodeURIComponent(part.slice(at + 1));
-    });
+    try {
+      query.split("&").forEach(function (part) {
+        var at = part.indexOf("=");
+        if (at > 0) result[decodeURIComponent(part.slice(0, at))]
+          = decodeURIComponent(part.slice(at + 1));
+      });
+    } catch (_) {
+      return {error: "邀请链接编码无效"};
+    }
     if (!result.roomId && raw && raw.indexOf("=") < 0 && raw.indexOf("/") < 0) result.roomId = raw;
+    result.roomId = text(result.roomId).trim();
+    result.inviterId = text(result.inviterId).trim();
+    if (result.provider && result.provider !== "netease") {
+      return {error: "这不是网易云一起听邀请"};
+    }
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(result.roomId)) {
+      return {error: "邀请链接或房间 ID 格式无效"};
+    }
+    if (result.inviterId && !/^\d{1,24}$/.test(result.inviterId)) {
+      return {error: "邀请者 ID 格式无效"};
+    }
     return result;
   }
   function operation(work) {
@@ -434,9 +451,12 @@ function create(api) {
     });
   }
   function joinRoom(invitationValue) {
+    var parsed = parseInvitation(invitationValue);
+    if (parsed.error) {
+      state.error = parsed.error;
+      return Promise.resolve(publicState());
+    }
     return operation(function () {
-      var parsed = parseInvitation(invitationValue);
-      if (!parsed.roomId) throw new Error("邀请中缺少房间 ID");
       return api.account().then(function (profile) {
         if (!profile || !profile.loggedIn) throw new Error("请先登录后使用一起听");
         state.accountId = text(profile.id);
@@ -462,13 +482,21 @@ function create(api) {
     args = args || {};
     var action = text(args.action);
     var payload = args.payload || {};
+    var inputs = payload.inputs || {};
     // "open" and "refresh" are the host's own lifecycle actions; every other
     // action id is the id of a button this description declared.
     if (action === "open" || action === "refresh" || action === "status") {
       return ensureInitialized().then(publicState);
     }
     if (action === "create") return createRoom();
-    if (action === "join") return joinRoom(payload.invitation);
+    if (action === "join") {
+      var invitationValue = text(inputs.invitation).trim();
+      if (!invitationValue) {
+        state.error = "";
+        return Promise.resolve(publicState());
+      }
+      return joinRoom(invitationValue);
+    }
     if (action === "leave") return leaveRoom();
     if (action === "copy") {
       var value = invitation();
