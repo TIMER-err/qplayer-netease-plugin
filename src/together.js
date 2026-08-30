@@ -21,6 +21,13 @@ function create(api) {
   function notify(value) {
     return call("notifications.toast", {message: value}).then(function () { return true; });
   }
+  // The host rejects a whole description when any field is off-schema, and these
+  // strings come from the provider. Strip control characters and clamp length so
+  // a hostile or merely odd server response cannot blank the dialog.
+  function plain(value, limit) {
+    var out = text(value).replace(/[\u0000-\u001f\u007f]/g, " ");
+    return out.length > limit ? out.slice(0, limit) : out;
+  }
   function memberNames(room) {
     return ((room && room.members) || []).map(function (member) {
       return text(member.displayName || member.id);
@@ -31,16 +38,49 @@ function create(api) {
     return "qplayer://listen-together?provider=netease&roomId="
       + encodeURIComponent(state.room.id) + "&inviterId=" + encodeURIComponent(state.accountId);
   }
+  // QPlayer renders plugin dialogs from a description built out of its own
+  // components, so this returns what the dialog should say rather than raw state
+  // plus a QML document. Every action handler ends here, which keeps the whole
+  // feature a plain "action in, new dialog out" loop.
   function publicState() {
-    return {
-      initialized: state.initialized, inRoom: state.inRoom, busy: state.busy,
-      roomId: state.room ? text(state.room.id) : "",
-      members: memberNames(state.room), invitation: invitation(),
-      statusText: state.inRoom
+    var body = [];
+    body.push({
+      type: "text", style: "title", center: true,
+      text: state.inRoom
         ? ((state.room && state.room.members && state.room.members.length)
           ? state.room.members.length + " 人正在一起听" : "正在一起听")
-        : "尚未加入房间",
-      error: state.error
+        : "尚未加入房间"
+    });
+    if (state.inRoom) {
+      body.push({
+        type: "text", style: "caption", center: true,
+        text: plain(memberNames(state.room), 200)
+              || ("房间 " + plain(state.room && state.room.id, 64))
+      });
+      body.push({type: "text", style: "body", text: plain(invitation(), 300)});
+      body.push({type: "row", items: [
+        {type: "button", id: "copy", label: "复制邀请", style: "filled"},
+        {type: "button", id: "leave", label: "退出房间", style: "outlined",
+         destructive: true}
+      ]});
+    } else {
+      body.push({
+        type: "text", style: "caption", center: true,
+        text: "创建房间，或粘贴好友发来的邀请链接"
+      });
+      body.push({type: "input", id: "invitation", placeholder: "邀请链接或房间 ID"});
+      body.push({type: "row", items: [
+        {type: "button", id: "create", label: "创建房间", style: "filled"},
+        {type: "button", id: "join", label: "加入房间", style: "outlined"}
+      ]});
+    }
+    if (state.error) body.push({type: "error", text: plain(state.error, 280)});
+    return {
+      title: "一起听",
+      subtitle: "网易云音乐",
+      icon: "group",
+      refreshMs: 1500,
+      body: body
     };
   }
   function playback() { return call("playback.read", {}); }
@@ -422,7 +462,11 @@ function create(api) {
     args = args || {};
     var action = text(args.action);
     var payload = args.payload || {};
-    if (action === "status") return ensureInitialized().then(publicState);
+    // "open" and "refresh" are the host's own lifecycle actions; every other
+    // action id is the id of a button this description declared.
+    if (action === "open" || action === "refresh" || action === "status") {
+      return ensureInitialized().then(publicState);
+    }
     if (action === "create") return createRoom();
     if (action === "join") return joinRoom(payload.invitation);
     if (action === "leave") return leaveRoom();
