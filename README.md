@@ -9,11 +9,15 @@ AMLL TTML/provider lyrics, account/login, likes, playlist actions, scrobbling,
 Heart Mode, sharing, and Listen Together through QPlayer's capability-based ABI.
 Its credentials are stored only through QPlayer's namespaced encrypted vault.
 
+The public ABI and package format are documented in
+[QPlayer's plugin guide](https://github.com/TIMER-err/qplayer/blob/master/docs/plugins.md).
+
 Build an unsigned package for manual testing:
 
 ```bash
 chmod +x scripts/package.sh
 ./scripts/package.sh
+python3 scripts/verify-package.py dist/*.qplug
 ```
 
 QPlayer always shows a code-execution warning for manually imported packages whose publisher signature is not in its trust store.
