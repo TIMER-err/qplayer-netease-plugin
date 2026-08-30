@@ -664,6 +664,12 @@ function login(args) {
   }
 }
 
+var togetherFeature = require("./together").create({
+  request: listenTogether,
+  songs: function (ids) { return songDetails(ids || []); },
+  account: account
+});
+
 module.exports = {handlers: {
   hotSearch: hotSearch,
   searchSongs: searchSongs,
@@ -685,5 +691,6 @@ module.exports = {handlers: {
   lyrics: lyrics,
   account: account,
   login: login,
-  listenTogether: listenTogether
+  backgroundTick: togetherFeature.tick,
+  "ui.listen-together": togetherFeature.ui
 }};

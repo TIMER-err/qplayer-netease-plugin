@@ -6,8 +6,11 @@ This project is not affiliated with or endorsed by NetEase Cloud Music. Users ar
 
 The plugin implements search, home/recommendations, details, playback resolution,
 AMLL TTML/provider lyrics, account/login, likes, playlist actions, scrobbling,
-Heart Mode, sharing, and Listen Together through QPlayer's capability-based ABI.
-Its credentials are stored only through QPlayer's namespaced encrypted vault.
+Heart Mode and sharing through QPlayer's capability-based ABI. Its credentials
+are stored only through QPlayer's namespaced encrypted vault.
+Listen Together's QML, room protocol, synchronization/leadership policy and
+notifications are implemented inside this package; QPlayer exposes only generic
+playback, queue, clipboard and toast services.
 
 The public ABI and package format are documented in the
 [QPlayer plugin template](https://github.com/TIMER-err/qplayer-plugin-template/blob/main/docs/ABI.md).

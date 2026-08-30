@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Check JavaScript syntax
-        run: node --check src/main.js
+        run: find src -name '*.js' -print0 | xargs -0 -n1 node --check
       - name: Build unsigned development package
         run: ./scripts/package.sh
       - name: Verify package contents
