@@ -49,6 +49,7 @@ fi
 output="$project_dir/dist/$plugin_id-$plugin_version.qplug"
 (
   cd "$stage_dir"
-  jar --create --file "$output" --no-manifest -C "$stage_dir" .
+  jar --create --file "$output" --no-manifest \
+    --date=2000-01-01T00:00:00Z -C "$stage_dir" .
 )
 printf '%s\n' "$output"
