@@ -32,5 +32,10 @@ repository, normally in the release workflow's secret store):
 QPLAYER_PLUGIN_SIGNING_KEY=/secure/path/publisher-private.pem ./scripts/package.sh
 ```
 
+`publisher-key.pub` holds the matching public key. QPlayer pins it, so it must not
+change: rotating the publisher key would make this plugin uninstallable on every
+already-released QPlayer. The release workflow refuses to sign with a key that does
+not derive to that file.
+
 The package is independently distributed and is not bundled into or hosted by
 QPlayer. NetEase Cloud Music is a trademark of its respective owner.
