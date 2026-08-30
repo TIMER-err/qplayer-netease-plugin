@@ -9,8 +9,8 @@ AMLL TTML/provider lyrics, account/login, likes, playlist actions, scrobbling,
 Heart Mode, sharing, and Listen Together through QPlayer's capability-based ABI.
 Its credentials are stored only through QPlayer's namespaced encrypted vault.
 
-The public ABI and package format are documented in
-[QPlayer's plugin guide](https://github.com/TIMER-err/qplayer/blob/master/docs/plugins.md).
+The public ABI and package format are documented in the
+[QPlayer plugin template](https://github.com/TIMER-err/qplayer-plugin-template/blob/main/docs/ABI.md).
 
 Build an unsigned package for manual testing:
 
