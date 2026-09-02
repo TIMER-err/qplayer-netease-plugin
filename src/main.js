@@ -493,17 +493,32 @@ function searchSongs(args) {
   });
 }
 
-function resolveStream(args) {
+function officialStream(args) {
   return eapi("/api/song/enhance/player/url/v1", {
     ids: "[" + args.id + "]", level: args.quality || "exhigh", encodeType: "flac"
   }).then(function (body) {
     var item = body.data && body.data[0];
-    if (!item || !item.url) throw new Error("歌曲暂无可用播放地址");
+    if (!item || !item.url) return {ok: false};
     return {
-      url: secureUrl(item.url), headers: {}, mimeType: item.type || "",
-      expiresAtMs: Date.now() + 15 * 60 * 1000,
-      trial: !!item.freeTrialInfo, cacheable: !item.freeTrialInfo
+      ok: true,
+      trial: !!item.freeTrialInfo,
+      stream: {
+        url: secureUrl(item.url), headers: {}, mimeType: item.type || "",
+        expiresAtMs: Date.now() + 15 * 60 * 1000,
+        trial: !!item.freeTrialInfo, cacheable: !item.freeTrialInfo
+      }
     };
+  }, function () { return {ok: false}; });
+}
+
+function resolveStream(args) {
+  return officialStream(args).then(function (official) {
+    if (official.ok && !official.trial) return official.stream;
+    return unblock.resolve({
+      songId: args.id,
+      official: official,
+      songDetails: function () { return songDetails([args.id]); }
+    });
   });
 }
 
@@ -697,6 +712,7 @@ function login(args) {
   }
 }
 
+var unblock = require("./unblock");
 var togetherFeature = require("./together").create({
   request: listenTogether,
   songs: function (ids) { return songDetails(ids || []); },
@@ -725,5 +741,6 @@ module.exports = {handlers: {
   account: account,
   login: login,
   backgroundTick: togetherFeature.tick,
-  "ui.listen-together": togetherFeature.ui
+  "ui.listen-together": togetherFeature.ui,
+  "ui.unblock": unblock.ui
 }};
