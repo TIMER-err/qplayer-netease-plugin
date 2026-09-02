@@ -97,7 +97,7 @@ function eapiClientHeader(cookies) {
   };
 }
 
-function eapi(path, data) {
+function eapi(path, data, timeoutMs) {
   return loadCookies().then(function (cookies) {
     var header = eapiClientHeader(cookies);
     var payload = Object.assign({}, data || {}, {header: header, e_r: false});
@@ -120,7 +120,8 @@ function eapi(path, data) {
           "User-Agent": "NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)",
           "Cookie": cookieHeader(header)
         },
-        body: form({params: String(params).toUpperCase()}), timeoutMs: 15000
+        body: form({params: String(params).toUpperCase()}),
+        timeoutMs: timeoutMs || 15000
       });
     }).then(function (response) {
       return absorbCookies(cookies, response).then(function () {
@@ -291,30 +292,62 @@ function home(args) {
   }).then(function (values) { return {playlists: values[0], songs: values[1]}; });
 }
 
+var SONG_DETAIL_BATCH = 200;
+
 function songDetails(nativeIds) {
-  if (!nativeIds || !nativeIds.length) return Promise.resolve([]);
-  var c = "[" + nativeIds.map(function (id) { return JSON.stringify({id: Number(id)}); }).join(",") + "]";
-  return weapi("v3/song/detail", {c: c}).then(function (body) {
-    return (body.songs || []).map(songDto);
+  var ids = [];
+  (nativeIds || []).forEach(function (id) {
+    if (id !== undefined && id !== null && String(id) !== "") ids.push(id);
   });
+  if (!ids.length) return Promise.resolve([]);
+  return mapBatches(ids, SONG_DETAIL_BATCH, function (batch) {
+    var c = "[" + batch.map(function (id) { return JSON.stringify({id: Number(id)}); }).join(",") + "]";
+    return weapi("v3/song/detail", {c: c}).then(function (body) {
+      return (body.songs || []).map(songDto);
+    });
+  });
+}
+
+function mapBatches(values, size, mapper) {
+  var acc = [];
+  function next(offset) {
+    if (offset >= values.length) return Promise.resolve(acc);
+    return mapper(values.slice(offset, offset + size)).then(function (part) {
+      acc = acc.concat(part || []);
+      return next(offset + size);
+    });
+  }
+  return next(0);
 }
 
 function playlistDetails(args) {
   return Promise.all([
-    eapi("/api/v6/playlist/detail", {id: args.id, n: 100000, s: 8}),
+    eapi("/api/v6/playlist/detail", {id: args.id, n: 100000, s: 8}, 30000),
     account()
   ]).then(function (values) {
       var body = values[0];
       var profile = values[1];
       var playlist = body.playlist || {};
-      var ids = (playlist.trackIds || []).slice(0, 1000).map(function (item) { return item.id; });
-      return songDetails(ids).then(function (songs) {
+      var tracks = playlist.tracks || [];
+      var trackIds = (playlist.trackIds || []).map(function (item) { return String(item.id); })
+        .filter(function (id) { return !!id && id !== "undefined"; });
+      var songs = tracks.map(songDto);
+      var have = {};
+      songs.forEach(function (song) { have[String(song.id)] = true; });
+      var missing = trackIds.filter(function (id) { return !have[id]; });
+      var loadMissing = missing.length ? songDetails(missing) : Promise.resolve([]);
+      return loadMissing.then(function (extra) {
+        var byId = {};
+        songs.concat(extra).forEach(function (song) { byId[String(song.id)] = song; });
+        var ordered = trackIds.length
+          ? trackIds.map(function (id) { return byId[id]; }).filter(Boolean)
+          : songs.concat(extra);
         var result = playlistDto(playlist);
         result.owned = !!(profile.loggedIn && playlist.creator
           && String(playlist.creator.userId) === String(profile.id));
         result.mutable = result.owned;
         result.deletable = result.owned;
-        result.songs = songs;
+        result.songs = ordered;
         return result;
       });
     });
