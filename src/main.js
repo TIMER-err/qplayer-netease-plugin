@@ -7,9 +7,22 @@ var RSA_EXPONENT = "010001";
 var RSA_MODULUS = "00e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725152b3ab17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312ecbda92557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d813cfe4875d3e82047b97ddef52741d546b8e289dc6935b3ece0462db0a22b8e7";
 var EAPI_HOST = "https://interfacepc.music.163.com";
 var WEB_HOST = "https://music.163.com";
+var CLIENT_LOG_HOST = "https://clientlog.music.163.com";
 var AMLL_HOST = "https://amlldb.bikonoo.com";
+// 易盾 anti-cheat token endpoint — the checkToken a risk-controlled write needs.
+var DUN_TOKEN_URL = "https://ac.dun.163yun.com/v3/b?pn=YD00000558929251";
+var EAPI_UA = "NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)";
+var WEAPI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+  + " (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0";
+var OSX_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+  + " (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+// Response codes the reference client treats as a delivered answer rather than a
+// failure — the QR-login states live in here.
+var ACCEPTED_CODES = [200, 201, 302, 400, 502, 800, 801, 802, 803];
 
 function call(method, args) { return qplayer.call(method, args || {}); }
+
+var xeapiTransport = require("./xeapi");
 
 function padLeft(value, width, fill) {
   value = String(value);
@@ -34,6 +47,18 @@ function form(values) {
   return parts.join("&");
 }
 
+/** The weapi secret key: 16 base62 characters, as the reference client generates it. */
+function base62Secret() {
+  var alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  return call("crypto.random", {length: 16, outputEncoding: "hex"}).then(function (value) {
+    var secret = "";
+    for (var i = 0; i < 16; i++) {
+      secret += alphabet.charAt(parseInt(String(value).substr(i * 2, 2), 16) % 62);
+    }
+    return secret;
+  });
+}
+
 function secureUrl(value) {
   value = String(value || "");
   return value.indexOf("http://") === 0 ? "https://" + value.slice(7) : value;
@@ -51,17 +76,181 @@ function parseCookieHeader(header) {
   return result;
 }
 
-function cookieHeader(cookies) {
-  return Object.keys(cookies).map(function (name) {
-    return encodeURIComponent(name) + "=" + encodeURIComponent(cookies[name]);
+function randomHex(bytes) {
+  var value = "";
+  for (var i = 0; i < bytes; i++) {
+    value += padLeft(Math.floor(Math.random() * 256).toString(16), 2, "0");
+  }
+  return value;
+}
+
+/** 52 upper-case hex characters, the shape the official client's deviceId has. */
+function generateDeviceId() {
+  var value = "";
+  for (var i = 0; i < 52; i++) value += "0123456789ABCDEF".charAt(Math.floor(Math.random() * 16));
+  return value;
+}
+
+// Computed once per plugin lifetime, like the reference implementation.
+var WNMCID = (function () {
+  var value = "";
+  for (var i = 0; i < 6; i++) value += String.fromCharCode(97 + Math.floor(Math.random() * 26));
+  return value + "." + Date.now() + ".01.0";
+})();
+
+// Netease hands out NMTID via Set-Cookie to a client that asks for an eapi endpoint
+// without one. We probe a few times like the reference client, then fall back.
+var nmtid = "";
+var nmtidRetriesLeft = 3;
+
+var realIp = null;
+
+/** A random mainland-China client IP, fixed for the plugin's lifetime. Netease's risk
+ *  control rejects sensitive ops ("当前环境异常" / 524) from addresses it can't place. */
+function clientIp() {
+  if (!realIp) {
+    var firsts = [36, 39, 42, 58, 59, 60, 101, 106, 110, 111, 112, 113, 114, 115, 116, 117,
+      118, 119, 120, 121, 122, 123, 124, 125, 175, 180, 182, 183, 202, 203, 210, 211, 218,
+      219, 220, 221, 222, 223];
+    realIp = firsts[Math.floor(Math.random() * firsts.length)]
+      + "." + Math.floor(Math.random() * 256)
+      + "." + Math.floor(Math.random() * 256)
+      + "." + (1 + Math.floor(Math.random() * 254));
+  }
+  return realIp;
+}
+
+function riskHeaders() {
+  var ip = clientIp();
+  return {"X-Real-IP": ip, "X-Forwarded-For": ip};
+}
+
+// Per-platform client identity, mirroring the reference implementation's osMap.
+var OS_MAP = {
+  pc: {os: "pc", appver: "3.1.17.204416",
+    osver: "Microsoft-Windows-10-Professional-build-19045-64bit", channel: "netease"},
+  android: {os: "android", appver: "8.20.20.231215173437", osver: "14", channel: "xiaomi"},
+  iphone: {os: "iPhone OS", appver: "9.0.90", osver: "16.2", channel: "distribution"},
+  osx: {os: "osx", appver: "3.1.10.5100", osver: "15.5", channel: "netease"}
+};
+
+/** The cookie jar a real client sends: the stored values plus the device-identity
+ *  flags. Without them netease's risk control rejects sensitive ops with code 524
+ *  "当前环境异常". `crypto` selects the NMTID rule the reference client uses. */
+function processCookies(cookies, crypto) {
+  var all = Object.assign({}, cookies || {});
+  var identity = OS_MAP[all.os] || OS_MAP.pc;
+  all.__remember_me = "true";
+  all.ntes_kaola_ad = "1";
+  all._ntes_nnid = all._ntes_nnid || ((all._ntes_nuid || "") + "," + Date.now());
+  all.WNMCID = all.WNMCID || WNMCID;
+  all.WEVNSM = all.WEVNSM || "1.0.0";
+  all.os = all.os || identity.os;
+  all.osver = all.osver || identity.osver;
+  all.appver = all.appver || identity.appver;
+  all.channel = all.channel || identity.channel;
+  if (nmtid) all.NMTID = nmtid;
+  else if (nmtidRetriesLeft <= 0 || crypto !== "eapi") all.NMTID = "00O" + randomHex(19);
+  if (!all.MUSIC_U && anonymousToken) all.MUSIC_A = all.MUSIC_A || anonymousToken;
+  return all;
+}
+
+function joinCookies(values) {
+  return Object.keys(values).map(function (name) {
+    return encodeURIComponent(name) + "=" + encodeURIComponent(values[name]);
   }).join("; ");
+}
+
+function cookieHeader(cookies, crypto) {
+  return joinCookies(processCookies(cookies, crypto));
+}
+
+/** Cookie for the mobile (eapi) host: the device header object itself, mirrored into
+ *  the Cookie the way the official apps do it. */
+function headerCookie(header) {
+  return joinCookies(header);
+}
+
+/** Capture the NMTID netease issues to a client that asked without one. Only a real
+ *  probe — a request that carried none — consumes a retry. */
+function absorbNmtid(response, sentNmtid) {
+  if (nmtid || sentNmtid || nmtidRetriesLeft <= 0) return;
+  nmtidRetriesLeft--;
+  var values = response && response.setCookies instanceof Array ? response.setCookies : [];
+  for (var i = 0; i < values.length; i++) {
+    var match = /(?:^|;\s*)NMTID=([^;]+)/.exec(String(values[i]));
+    if (match) { nmtid = match[1]; return; }
+  }
+}
+
+/** Fetch a fresh 易盾 anti-cheat token. The reference client never reuses one — a
+ *  replayed token is itself a risk-control signal — so this is per-request. */
+function checkTokenFor(options) {
+  if (!options || !options.checkToken) return Promise.resolve("");
+  return call("http.request", {
+    url: DUN_TOKEN_URL, method: "GET", timeoutMs: 10000
+  }).then(function (response) {
+    var match = /null\(\[(\d+),\d+,"([^"]+)"\]\)/.exec(String(response.body || ""));
+    return match && match[1] === "200" ? match[2] : "";
+  }, function () { return ""; });
+}
+
+var anonymousToken = "";
+var anonymousRequest = null;
+
+/** Register an anonymous session so unauthenticated requests carry a real MUSIC_A
+ *  instead of no account at all. Attempted once per plugin lifetime, like the
+ *  reference client does at startup; a failure just leaves the token empty. */
+function ensureAnonymousToken(cookies) {
+  if (anonymousToken) return Promise.resolve(anonymousToken);
+  if (anonymousRequest) return anonymousRequest;
+  var deviceId = cookies.deviceId || "";
+  anonymousRequest = xeapiTransport.anonymousUsername(deviceId).then(function (username) {
+    return xeapiTransport.request("/api/register/anonimous", {username: username},
+      xeapiContext(cookies), 15000, true);
+  }).then(function (result) {
+    var body = result.body || {};
+    if (Number(body.code) !== 200) return "";
+    var values = result.setCookies || [];
+    for (var i = 0; i < values.length; i++) {
+      var match = /(?:^|;\s*)MUSIC_A=([^;]+)/.exec(String(values[i]));
+      if (match) { anonymousToken = match[1]; break; }
+    }
+    return anonymousToken;
+  }, function () { return ""; });
+  return anonymousRequest;
+}
+
+/** The cookie jar for an outgoing request. The first unauthenticated call kicks off
+ *  anonymous registration without waiting on it, so the token joins later requests
+ *  instead of delaying this one. */
+function requestCookies() {
+  return loadCookies().then(function (stored) {
+    if (!stored.MUSIC_U && !anonymousToken && !anonymousRequest) {
+      ensureAnonymousToken(stored);
+    }
+    return stored;
+  });
 }
 
 function loadCookies() {
   return call("credentials.get", {key: "cookies"}).then(function (stored) {
-    if (!stored) return {};
-    try { return JSON.parse(stored); } catch (_) { return {}; }
+    var cookies = {};
+    if (stored) {
+      try { cookies = JSON.parse(stored) || {}; } catch (_) { cookies = {}; }
+    }
+    return ensureDeviceCookies(cookies);
   });
+}
+
+/** Persist a stable deviceId + _ntes_nuid so the client fingerprint doesn't change
+ *  between requests — a moving fingerprint itself trips risk control. */
+function ensureDeviceCookies(cookies) {
+  var changed = false;
+  if (!cookies._ntes_nuid) { cookies._ntes_nuid = randomHex(32); changed = true; }
+  if (!cookies.deviceId) { cookies.deviceId = generateDeviceId(); changed = true; }
+  if (!changed) return Promise.resolve(cookies);
+  return saveCookies(cookies).then(function () { return cookies; });
 }
 
 function saveCookies(cookies) {
@@ -78,66 +267,116 @@ function absorbCookies(cookies, response) {
   return values.length ? saveCookies(cookies) : Promise.resolve(true);
 }
 
-function eapiClientHeader(cookies) {
-  var now = Date.now();
-  return {
-    osver: cookies.osver || "16.2",
-    deviceId: cookies.deviceId || "",
-    os: cookies.os || "iPhone OS",
-    appver: cookies.appver || "9.0.90",
+/** The client header signed into the eapi body and mirrored into the Cookie. The
+ *  identity fields come from the processed jar so they stay consistent with the
+ *  Cookie the same request sends. */
+function eapiClientHeader(cookies, token) {
+  var header = {
+    osver: cookies.osver,
+    deviceId: cookies.deviceId,
+    os: cookies.os,
+    appver: cookies.appver,
     versioncode: cookies.versioncode || "140",
-    mobilename: "",
-    buildver: String(Math.floor(now / 1000)),
-    resolution: "1920x1080",
+    mobilename: cookies.mobilename || "",
+    buildver: cookies.buildver || String(Date.now()).slice(0, 10),
+    resolution: cookies.resolution || "1920x1080",
     __csrf: cookies.__csrf || "",
-    channel: cookies.channel || "distribution",
-    requestId: now + "_" + padLeft(Math.floor(Math.random() * 1000), 4, "0"),
-    MUSIC_U: cookies.MUSIC_U || "",
-    MUSIC_A: cookies.MUSIC_A || ""
+    channel: cookies.channel,
+    requestId: Date.now() + "_" + padLeft(Math.floor(Math.random() * 1000), 4, "0")
   };
+  if (cookies.MUSIC_U) header.MUSIC_U = cookies.MUSIC_U;
+  if (cookies.MUSIC_A) header.MUSIC_A = cookies.MUSIC_A;
+  if (token) header["X-antiCheatToken"] = token;
+  if (cookies.NMTID) header.NMTID = cookies.NMTID;
+  return header;
 }
 
-function eapi(path, data, timeoutMs) {
-  return loadCookies().then(function (cookies) {
-    var header = eapiClientHeader(cookies);
-    var payload = Object.assign({}, data || {}, {header: header, e_r: false});
-    var json = JSON.stringify(payload);
-    return call("crypto.digest", {
-      algorithm: "MD5", data: "nobody" + path + "use" + json + "md5forencrypt",
-      outputEncoding: "hex"
-    }).then(function (digest) {
-      var signed = path + "-36cd479b6b5-" + json + "-36cd479b6b5-" + digest;
-      return call("crypto.aes", {
-        transformation: "AES/ECB/PKCS5Padding", operation: "encrypt",
-        key: EAPI_KEY, keyEncoding: "utf8", data: signed, dataEncoding: "utf8",
+function eapi(path, data, options) {
+  options = options || {};
+  return checkTokenFor(options).then(function (token) {
+    return requestCookies().then(function (stored) {
+      var source = stored;
+      if (options.os) {
+        // Take the whole platform identity, not just the os name.
+        source = Object.assign({}, stored, {os: options.os});
+        delete source.osver;
+        delete source.appver;
+        delete source.channel;
+      }
+      var cookies = processCookies(source, "eapi");
+      var header = eapiClientHeader(cookies, token);
+      var payload = Object.assign({}, data || {}, {e_r: false, header: header});
+      var json = JSON.stringify(payload);
+      return call("crypto.digest", {
+        algorithm: "MD5", data: "nobody" + path + "use" + json + "md5forencrypt",
         outputEncoding: "hex"
-      });
-    }).then(function (params) {
-      return call("http.request", {
-        url: EAPI_HOST + "/eapi/" + path.slice(5), method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)",
-          "Cookie": cookieHeader(header)
-        },
-        body: form({params: String(params).toUpperCase()}),
-        timeoutMs: timeoutMs || 15000
-      });
-    }).then(function (response) {
-      return absorbCookies(cookies, response).then(function () {
-        if (response.status < 200 || response.status >= 300) throw new Error("HTTP " + response.status);
-        var body = JSON.parse(response.body || "{}");
-        if (body.code && body.code !== 200 && body.code !== 801 && body.code !== 802 && body.code !== 803) {
-          throw new Error(body.message || body.msg || ("API " + body.code));
-        }
-        return body;
+      }).then(function (digest) {
+        var signed = path + "-36cd479b6b5-" + json + "-36cd479b6b5-" + digest;
+        return call("crypto.aes", {
+          transformation: "AES/ECB/PKCS5Padding", operation: "encrypt",
+          key: EAPI_KEY, keyEncoding: "utf8", data: signed, dataEncoding: "utf8",
+          outputEncoding: "hex"
+        });
+      }).then(function (params) {
+        return call("http.request", {
+          url: (options.domain || EAPI_HOST) + "/eapi/" + path.slice(5), method: "POST",
+          headers: Object.assign({
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": cookies.os === "osx" ? OSX_UA : EAPI_UA,
+            "Referer": WEB_HOST,
+            "Cookie": headerCookie(header)
+          }, riskHeaders()),
+          body: form({params: String(params).toUpperCase()}),
+          timeoutMs: options.timeoutMs || 15000
+        });
+      }).then(function (response) {
+        absorbNmtid(response, !!cookies.NMTID);
+        return absorbCookies(stored, response).then(function () {
+          if (response.status < 200 || response.status >= 300) throw new Error("HTTP " + response.status);
+          var body = JSON.parse(response.body || "{}");
+          if (body.code && ACCEPTED_CODES.indexOf(Number(body.code)) < 0) {
+            throw new Error(body.message || body.msg || ("API " + body.code));
+          }
+          return body;
+        });
       });
     });
   });
 }
 
-function weapi(path, data) {
+function xeapiContext(cookies) {
+  var processed = processCookies(cookies, "xeapi");
+  return {
+    deviceId: processed.deviceId || "",
+    musicU: processed.MUSIC_U || "",
+    ip: clientIp(),
+    cookie: processed
+  };
+}
+
+/** POST through the xeapi transport. Netease risk-controls the eapi host hard on the
+ *  song-url endpoint; the official Android app moved it here, so we follow. */
+function xeapi(path, data, timeoutMs) {
   return loadCookies().then(function (cookies) {
+    return xeapiTransport.request(path, data, xeapiContext(cookies), timeoutMs)
+      .then(function (body) {
+        if (body.code && ACCEPTED_CODES.indexOf(Number(body.code)) < 0) {
+          throw new Error(body.message || body.msg || ("API " + body.code));
+        }
+        return body;
+      });
+  });
+}
+
+function weapi(path, data, options) {
+  options = options || {};
+  return checkTokenFor(options).then(function (token) {
+    return weapiCall(path, data, token, options);
+  });
+}
+
+function weapiCall(path, data, token, options) {
+  return requestCookies().then(function (cookies) {
     var payload = Object.assign({}, data || {}, {csrf_token: cookies.__csrf || ""});
     var first;
     var secret;
@@ -148,9 +387,9 @@ function weapi(path, data) {
       outputEncoding: "base64"
     }).then(function (value) {
       first = value;
-      return call("crypto.random", {length: 8, outputEncoding: "hex"});
+      return base62Secret();
     }).then(function (value) {
-      secret = String(value).slice(0, 16);
+      secret = value;
       return call("crypto.aes", {
         transformation: "AES/CBC/PKCS5Padding", key: secret, keyEncoding: "utf8",
         iv: IV, ivEncoding: "utf8", data: first, dataEncoding: "utf8",
@@ -163,20 +402,24 @@ function weapi(path, data) {
         modulusHex: RSA_MODULUS, width: 256
       });
     }).then(function (encSecKey) {
+      var headers = Object.assign({
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": WEAPI_UA,
+        "Referer": WEB_HOST, "Origin": WEB_HOST,
+        "Cookie": cookieHeader(cookies, "weapi")
+      }, riskHeaders());
+      if (token) headers["X-antiCheatToken"] = token;
       return call("http.request", {
         url: WEB_HOST + "/weapi/" + path.replace(/^\/?api\//, ""), method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-          "Referer": WEB_HOST, "Origin": WEB_HOST, "Cookie": cookieHeader(cookies)
-        },
-        body: form({params: params, encSecKey: encSecKey}), timeoutMs: 15000
+        headers: headers,
+        body: form({params: params, encSecKey: encSecKey}),
+        timeoutMs: options.timeoutMs || 15000
       });
     }).then(function (response) {
       return absorbCookies(cookies, response).then(function () {
         if (response.status < 200 || response.status >= 300) throw new Error("HTTP " + response.status);
         var body = JSON.parse(response.body || "{}");
-        if (body.code && body.code !== 200 && body.code !== 801 && body.code !== 802 && body.code !== 803) {
+        if (body.code && ACCEPTED_CODES.indexOf(Number(body.code)) < 0) {
           throw new Error(body.message || body.msg || ("API " + body.code));
         }
         return body;
@@ -322,7 +565,7 @@ function mapBatches(values, size, mapper) {
 
 function playlistDetails(args) {
   return Promise.all([
-    eapi("/api/v6/playlist/detail", {id: args.id, n: 100000, s: 8}, 30000),
+    eapi("/api/v6/playlist/detail", {id: args.id, n: 100000, s: 8}, {timeoutMs: 30000}),
     account()
   ]).then(function (values) {
       var body = values[0];
@@ -403,7 +646,7 @@ function like(args) {
   if (args.operation === "list") {
     return account().then(function (profile) {
       if (!profile.loggedIn) return [];
-      return weapi("song/like/get", {uid: Number(profile.id)}).then(function (body) {
+      return eapi("/api/song/like/get", {uid: Number(profile.id)}).then(function (body) {
         return (body.ids || []).map(String);
       });
     });
@@ -431,12 +674,12 @@ function playlistMutation(args) {
   }
   if (op === "subscribe" || op === "unsubscribe") {
     var path = op === "subscribe" ? "playlist/subscribe" : "playlist/unsubscribe";
-    return eapi("/api/" + path, {id: Number(args.playlistId)})
+    return eapi("/api/" + path, {id: Number(args.playlistId)}, {checkToken: true})
       .then(function (body) { return Number(body.code || 0) === 200; });
   }
   if (op === "add" || op === "remove") {
     var ids = args.songIds || [];
-    return weapi("playlist/manipulate/tracks", {
+    return eapi("/api/playlist/manipulate/tracks", {
       op: op === "add" ? "add" : "del", pid: Number(args.playlistId),
       trackIds: JSON.stringify(ids.map(Number)), imme: "true"
     }).then(function (body) { return Number(body.code || 0) === 200; });
@@ -444,17 +687,29 @@ function playlistMutation(args) {
   throw new Error("未知歌单操作");
 }
 
+/** Listening report. The reference client sends two eapi weblogs to the client-log
+ *  host under an os=osx jar: "startplay" puts the song in 最近播放, "play" credits the
+ *  listening count. */
 function scrobble(args) {
   return loadCookies().then(function (cookies) {
     if (!cookies.MUSIC_U || Number(args.playedMs || 0) < 3000) return true;
-    var event = {action: "play", json: {
-      type: "song", wifi: 0, download: 0, id: Number(args.id),
-      time: Math.floor(Number(args.playedMs || 0) / 1000),
-      end: args.completed ? "playend" : "ui", source: "list", sourceId: 0,
-      mainsite: 1, content: ""
+    var sourceId = args.sourceId ? String(args.sourceId) : "";
+    var options = {domain: CLIENT_LOG_HOST, os: "osx"};
+    var startplay = {action: "startplay", json: {
+      id: Number(args.id), type: "song", mainsite: "1", mainsiteWeb: "1",
+      content: "id=" + sourceId
     }};
-    return weapi("feedback/weblog", {logs: JSON.stringify([event])})
-      .then(function () { return true; });
+    var play = {action: "play", json: {
+      download: 0, end: args.completed ? "playend" : "ui", id: Number(args.id),
+      sourceId: sourceId, time: Math.floor(Number(args.playedMs || 0) / 1000),
+      type: "song", wifi: 0, source: "list", mainsite: "1", mainsiteWeb: "1",
+      content: "id=" + sourceId
+    }};
+    return eapi("/api/feedback/weblog", {logs: JSON.stringify([startplay])}, options)
+      .then(function () {
+        return eapi("/api/feedback/weblog", {logs: JSON.stringify([play])}, options);
+      })
+      .then(function () { return true; }, function () { return true; });
   });
 }
 
@@ -494,7 +749,7 @@ function searchSongs(args) {
 }
 
 function officialStream(args) {
-  return eapi("/api/song/enhance/player/url/v1", {
+  return xeapi("/api/song/enhance/player/url/v1", {
     ids: "[" + args.id + "]", level: args.quality || "exhigh", encodeType: "flac"
   }).then(function (body) {
     var item = body.data && body.data[0];
@@ -693,9 +948,19 @@ function login(args) {
       });
     }
     case "submit": {
-      var cookies = parseCookieHeader(args.credential || "");
-      if (!cookies.MUSIC_U) return {methodId: args.methodId, status: "failed", message: "Cookie 中缺少 MUSIC_U"};
-      return saveCookies(cookies).then(function () {
+      var imported = parseCookieHeader(args.credential || "");
+      if (!imported.MUSIC_U) return {methodId: args.methodId, status: "failed", message: "Cookie 中缺少 MUSIC_U"};
+      // Carry the existing device identity over to the imported jar: a login that resets
+      // deviceId/_ntes_nuid looks like a brand-new device to risk control.
+      return loadCookies().then(function (existing) {
+        var candidate = {};
+        if (existing._ntes_nuid) candidate._ntes_nuid = existing._ntes_nuid;
+        if (existing.deviceId) candidate.deviceId = existing.deviceId;
+        Object.keys(imported).forEach(function (name) { candidate[name] = imported[name]; });
+        if (!candidate._ntes_nuid) candidate._ntes_nuid = randomHex(32);
+        if (!candidate.deviceId) candidate.deviceId = randomHex(16);
+        return saveCookies(candidate);
+      }).then(function () {
         return account();
       }).then(function (profile) {
         if (!profile.loggedIn) throw new Error("登录凭据无效");
@@ -707,7 +972,11 @@ function login(args) {
       });
     }
     case "logout":
-      return call("credentials.delete", {key: "cookies"}).then(function () { return true; });
+      // Tell the server first so the session really ends; it may 301, which is fine —
+      // the local jar is cleared either way.
+      return eapi("/api/logout", {}).then(function () { return true; }, function () { return true; })
+        .then(function () { return call("credentials.delete", {key: "cookies"}); })
+        .then(function () { return true; });
     default: throw new Error("未知登录操作");
   }
 }
