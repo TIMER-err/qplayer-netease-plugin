@@ -346,19 +346,27 @@ function create(api) {
     }
     return Promise.resolve(true);
   }
+  function whenReady() {
+    if (state.initialized) return Promise.resolve();
+    return ensureInitialized().then(function () {});
+  }
   function tick() {
-    return ensureInitialized().then(function () {
-      state.ticks++;
-      if (state.busy) return publicState();
-      // Login can complete after the plugin runtime started. Probe infrequently
-      // while idle so an existing server-side room is restored without requiring
-      // QPlayer to expose an account/login lifecycle event.
-      if (!state.inRoom) {
-        if (state.ticks % 10 !== 0) return publicState();
-        state.initialized = false;
-        return ensureInitialized();
-      }
-      if (Date.now() < state.rateLimitUntil) return publicState();
+    state.ticks++;
+    if (state.busy) return true;
+    // Login can complete after the plugin runtime started. Probe infrequently
+    // while idle so an existing server-side room is restored without requiring
+    // QPlayer to expose an account/login lifecycle event. Never return
+    // publicState() from the background tick — the host discards the result,
+    // and cloning a dialog tree into Java every second was steady GC on mobile.
+    if (!state.inRoom) {
+      if (state.initialized && state.ticks % 10 !== 0) return true;
+      if (state.initializing) return true;
+      if (!state.initialized && Date.now() - state.lastInitAttempt < 5000) return true;
+      state.initialized = false;
+      return whenReady().then(function () { return true; });
+    }
+    if (Date.now() < state.rateLimitUntil) return true;
+    return whenReady().then(function () {
       return blockAutoAdvance(true).then(playback).then(function (local) {
         return handleNaturalEnd(local).then(function () { return playback(); });
       }).then(function (local) {
@@ -385,10 +393,10 @@ function create(api) {
         state.error = "";
         state.rateLimitFailures = 0;
         state.rateLimitUntil = 0;
-        return publicState();
+        return true;
       }, function (error) {
         registerSyncFailure(error);
-        return publicState();
+        return true;
       });
     });
   }
