@@ -541,36 +541,47 @@ function blockPlaylistDto(resource) {
     description: (ui.subTitle || {}).title || "",
     artworkUrl: secureUrl((ui.image || {}).imageUrl || ""),
     owner: null,
+    // Block cards carry no track count, only a play count; the host falls back
+    // to that rather than claiming the playlist is empty.
     trackCount: Number(ext.trackCount || 0),
     playCount: Number(ext.playCount || 0),
     subscribed: false, owned: false
   };
 }
 
+/** Playlists inside a 首页-发现 block; the API calls them "list", not "playlist". */
+function blockPlaylists(block, seen) {
+  var out = [];
+  (block.creatives || []).forEach(function (creative) {
+    (creative.resources || []).forEach(function (resource) {
+      var type = String(resource.resourceType || "").toLowerCase();
+      if (type !== "list" && type !== "playlist") return;
+      var item = blockPlaylistDto(resource);
+      // The same playlist shows up in several blocks and again in the plain
+      // recommendation grid; the first group to claim it keeps it.
+      if (!item.id || !item.name || seen[item.id]) return;
+      seen[item.id] = true;
+      out.push(item);
+    });
+  });
+  return out;
+}
+
 /**
- * 首页-发现的分组(雷达歌单、专属场景歌单…)。官方 App 把这些歌单单独成组,
- * 混进推荐歌单里就找不着了,所以原样按组返回给宿主。需要登录。
+ * 首页-发现的歌单分组:雷达歌单、专属场景歌单…官方 App 把它们各自成组,混进
+ * 推荐歌单里就找不着了。跳过官方的「推荐歌单」块,那批歌单由 personalized
+ * 那条路走,数量还受用户设置控制。需要登录。
  */
 function homeSections(seen) {
   return weapi("homepage/block/page", {refresh: false, cursor: ""}).then(function (body) {
     var blocks = (body.data || {}).blocks || [];
     var sections = [];
     blocks.forEach(function (block) {
+      if (String(block.blockCode || "") === "HOMEPAGE_BLOCK_PLAYLIST_RCMD") return;
       var ui = block.uiElement || {};
       var title = (ui.mainTitle || {}).title || (ui.subTitle || {}).title || "";
       if (!title) return;
-      var playlists = [];
-      (block.creatives || []).forEach(function (creative) {
-        (creative.resources || []).forEach(function (resource) {
-          if (String(resource.resourceType || "").toLowerCase() !== "playlist") return;
-          var item = blockPlaylistDto(resource);
-          // The same playlist shows up in several blocks and again in the plain
-          // recommendation grid; the first group to claim it keeps it.
-          if (!item.id || !item.name || seen[item.id]) return;
-          seen[item.id] = true;
-          playlists.push(item);
-        });
-      });
+      var playlists = blockPlaylists(block, seen);
       // A single card is not worth a heading of its own.
       if (playlists.length > 1) {
         sections.push({title: title, playlists: playlists.slice(0, 30)});
