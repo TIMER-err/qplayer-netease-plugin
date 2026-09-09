@@ -593,16 +593,21 @@ function homeSections(seen) {
 
 function home(args) {
   if (args.operation === "recommendSongs") return recommendSongs();
+  var limit = Math.max(1, Number(args.limit || 12));
   var claimed = {};
   return loadCookies().then(function (cookies) {
     var loggedIn = !!cookies.MUSIC_U;
     return Promise.all([
-      personalizedPlaylists(args.limit),
+      // Ask for extra: the ones a section already claimed are dropped below, and
+      // the user asked to see `limit` playlists, not `limit` minus the overlap.
+      personalizedPlaylists(limit + 15),
       loggedIn ? recommendSongs().catch(function () { return []; }) : [],
       loggedIn ? homeSections(claimed) : []
     ]);
   }).then(function (values) {
-    var playlists = values[0].filter(function (item) { return !claimed[item.id]; });
+    var playlists = values[0].filter(function (item) {
+      return !claimed[item.id];
+    }).slice(0, limit);
     return {playlists: playlists, songs: values[1], sections: values[2]};
   });
 }
