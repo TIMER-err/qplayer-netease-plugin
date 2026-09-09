@@ -531,13 +531,69 @@ function recommendSongs() {
   });
 }
 
+/** One playlist card out of a 首页-发现 block resource. */
+function blockPlaylistDto(resource) {
+  var ui = resource.uiElement || {};
+  var ext = resource.resourceExtInfo || {};
+  return {
+    id: String(resource.resourceId || ""),
+    name: (ui.mainTitle || {}).title || "",
+    description: (ui.subTitle || {}).title || "",
+    artworkUrl: secureUrl((ui.image || {}).imageUrl || ""),
+    owner: null,
+    trackCount: Number(ext.trackCount || 0),
+    playCount: Number(ext.playCount || 0),
+    subscribed: false, owned: false
+  };
+}
+
+/**
+ * 首页-发现的分组(雷达歌单、专属场景歌单…)。官方 App 把这些歌单单独成组,
+ * 混进推荐歌单里就找不着了,所以原样按组返回给宿主。需要登录。
+ */
+function homeSections(seen) {
+  return weapi("homepage/block/page", {refresh: false, cursor: ""}).then(function (body) {
+    var blocks = (body.data || {}).blocks || [];
+    var sections = [];
+    blocks.forEach(function (block) {
+      var ui = block.uiElement || {};
+      var title = (ui.mainTitle || {}).title || (ui.subTitle || {}).title || "";
+      if (!title) return;
+      var playlists = [];
+      (block.creatives || []).forEach(function (creative) {
+        (creative.resources || []).forEach(function (resource) {
+          if (String(resource.resourceType || "").toLowerCase() !== "playlist") return;
+          var item = blockPlaylistDto(resource);
+          // The same playlist shows up in several blocks and again in the plain
+          // recommendation grid; the first group to claim it keeps it.
+          if (!item.id || !item.name || seen[item.id]) return;
+          seen[item.id] = true;
+          playlists.push(item);
+        });
+      });
+      // A single card is not worth a heading of its own.
+      if (playlists.length > 1) {
+        sections.push({title: title, playlists: playlists.slice(0, 30)});
+      }
+    });
+    return sections.slice(0, 6);
+  }, function () { return []; });
+}
+
 function home(args) {
   if (args.operation === "recommendSongs") return recommendSongs();
+  var claimed = {};
   return loadCookies().then(function (cookies) {
-    var songPromise = cookies.MUSIC_U ? recommendSongs().catch(function () { return []; })
-      : Promise.resolve([]);
-    return Promise.all([personalizedPlaylists(args.limit), songPromise]);
-  }).then(function (values) { return {playlists: values[0], songs: values[1]}; });
+    var loggedIn = !!cookies.MUSIC_U;
+    return Promise.all([
+      personalizedPlaylists(args.limit),
+      loggedIn ? recommendSongs().catch(function () { return []; }) : [],
+      loggedIn ? homeSections(claimed) : []
+    ]);
+  }).then(function (values) {
+    var playlists = values[0].filter(function (item) { return !claimed[item.id]; });
+    return {playlists: playlists, songs: values[1], sections: values[2]};
+  });
 }
 
 var SONG_DETAIL_BATCH = 200;

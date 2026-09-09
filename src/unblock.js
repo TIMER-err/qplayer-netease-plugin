@@ -228,23 +228,19 @@ function resolve(options) {
 }
 
 function ui(args) {
-  var action = args && args.action;
   var next = Promise.resolve();
-  if (action === "enable") next = setEnabled(true);
-  if (action === "disable") next = setEnabled(false);
+  if (args && args.action === "enabled") {
+    var inputs = (args.payload || {}).inputs || {};
+    next = setEnabled(inputs.enabled === true);
+  }
   return next.then(enabled).then(function (on) {
     return {
       title: "音源解锁",
       subtitle: "网易云音乐",
       icon: "lock_open",
       body: [
-        {type: "text", style: "body",
-          text: "官方无版权或仅试听时，自动依次尝试其他音源。"},
-        {type: "text", style: "caption", text: on ? "当前：已开启" : "当前：已关闭"},
-        {type: "row", items: [
-          {type: "button", id: "enable", label: "开启", style: on ? "filled" : "outlined"},
-          {type: "button", id: "disable", label: "关闭", style: on ? "outlined" : "filled"}
-        ]}
+        {type: "switch", id: "enabled", label: "音源解锁", checked: on,
+          desc: "官方无版权或仅试听时，自动依次尝试其他音源。"}
       ]
     };
   });
