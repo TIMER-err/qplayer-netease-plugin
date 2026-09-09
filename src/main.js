@@ -462,6 +462,14 @@ function songDto(song) {
   };
 }
 
+/**
+ * 「XX喜欢的音乐」是账号自带的歌单,删不掉。网易云用 specialType 5 标记它,列表和
+ * 详情两个接口都会带上;之前详情这边没判断,打开它时右上角会多出一个删除按钮。
+ */
+function isFavoritePlaylist(value) {
+  return Number((value || {}).specialType || 0) === 5;
+}
+
 function playlistDto(value) {
   value = value || {};
   var creator = value.creator || {};
@@ -682,7 +690,7 @@ function playlistDetails(args) {
         result.owned = !!(profile.loggedIn && playlist.creator
           && String(playlist.creator.userId) === String(profile.id));
         result.mutable = result.owned;
-        result.deletable = result.owned;
+        result.deletable = result.owned && !isFavoritePlaylist(playlist);
         result.songs = ordered;
         return result;
       });
@@ -722,13 +730,11 @@ function userPlaylists(args) {
     if (!profile.loggedIn) return [];
     return weapi("user/playlist", {uid: Number(profile.id), limit: Number(args.limit || 100),
       offset: 0, includeVideo: true}).then(function (body) {
-        var seenOwned = false;
         return (body.playlist || []).map(function (value) {
           var playlist = playlistDto(value);
           playlist.owned = !!(value.creator && String(value.creator.userId) === String(profile.id));
           playlist.mutable = playlist.owned;
-          playlist.deletable = playlist.owned && seenOwned;
-          if (playlist.owned) seenOwned = true;
+          playlist.deletable = playlist.owned && !isFavoritePlaylist(value);
           return playlist;
         });
       });
