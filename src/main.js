@@ -64,6 +64,17 @@ function base62Secret() {
   });
 }
 
+/**
+ * 列表行用的小图。网易云的图床支持 param 缩放,原图动辄一兆像素,滚动歌单时
+ * 每一行都去下载并解码一张,卡顿和内存都吃不消。
+ */
+function thumbUrl(value, size) {
+  var url = secureUrl(value);
+  if (!url) return "";
+  var pixels = size || 140;
+  return url + (url.indexOf("?") >= 0 ? "&" : "?") + "param=" + pixels + "y" + pixels;
+}
+
 function secureUrl(value) {
   value = String(value || "");
   return value.indexOf("http://") === 0 ? "https://" + value.slice(7) : value;
@@ -446,6 +457,7 @@ function songDto(song) {
     album: album.id ? {id: String(album.id), name: album.name || ""} : null,
     durationMs: Number(song.dt || song.duration || 0),
     artworkUrl: secureUrl(album.picUrl || album.blurPicUrl || ""),
+    artworkThumbUrl: thumbUrl(album.picUrl || album.blurPicUrl || ""),
     playable: !(song.noCopyrightRcmd), trial: false
   };
 }
@@ -457,6 +469,7 @@ function playlistDto(value) {
     id: String(value.id || ""), name: value.name || "",
     description: value.description || "",
     artworkUrl: secureUrl(value.picUrl || value.coverImgUrl || ""),
+    artworkThumbUrl: thumbUrl(value.picUrl || value.coverImgUrl || "", 300),
     owner: creator.userId ? {id: String(creator.userId), name: creator.nickname || ""} : null,
     trackCount: Number(value.trackCount || 0), playCount: Number(value.playCount || 0),
     subscribed: !!value.subscribed, owned: false
@@ -469,6 +482,7 @@ function albumDto(value, songs) {
   return {
     id: String(value.id || ""), name: value.name || "",
     artworkUrl: secureUrl(value.picUrl || value.blurPicUrl || ""),
+    artworkThumbUrl: thumbUrl(value.picUrl || value.blurPicUrl || "", 300),
     publishTimeMs: Number(value.publishTime || 0), description: value.description || "",
     trackCount: Number(value.size || value.trackCount || (songs || []).length),
     artists: artists.map(function (artist) {
@@ -483,6 +497,7 @@ function artistDto(value, songs, albums) {
   return {
     id: String(value.id || ""), name: value.name || "",
     artworkUrl: secureUrl(value.picUrl || value.img1v1Url || value.cover || ""),
+    artworkThumbUrl: thumbUrl(value.picUrl || value.img1v1Url || value.cover || "", 300),
     description: value.briefDesc || value.briefIntroduction || "",
     albumCount: Number(value.albumSize || 0), songCount: Number(value.musicSize || 0),
     songs: (songs || []).map(songDto), albums: albums || []
@@ -540,6 +555,7 @@ function blockPlaylistDto(resource) {
     name: (ui.mainTitle || {}).title || "",
     description: (ui.subTitle || {}).title || "",
     artworkUrl: secureUrl((ui.image || {}).imageUrl || ""),
+    artworkThumbUrl: thumbUrl((ui.image || {}).imageUrl || "", 300),
     owner: null,
     // Block cards carry no track count, only a play count; the host falls back
     // to that rather than claiming the playlist is empty.
