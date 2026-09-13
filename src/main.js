@@ -906,7 +906,7 @@ function account() {
     if (!cookies.MUSIC_U) return {loggedIn: false};
     return weapi("w/nuser/account/get", {}).then(function (body) {
       var profile = body.profile || {};
-      return {
+      var result = {
         loggedIn: !!profile.userId,
         id: profile.userId ? String(profile.userId) : "",
         displayName: profile.nickname || "",
@@ -915,6 +915,21 @@ function account() {
         level: Number(profile.level || body.level || 0),
         signature: profile.signature || ""
       };
+      if (!result.loggedIn) return result;
+      // account/get does not normally include a level. The level endpoint
+      // returns it under data, separately from the account profile.
+      return weapi("user/level", {}).then(function (levelBody) {
+        var level = levelBody.data && levelBody.data.level;
+        if (level !== undefined && level !== null && level !== ""
+            && isFinite(Number(level)) && Number(level) >= 0) {
+          result.level = Number(level);
+        }
+        return result;
+      }, function () {
+        // A failed optional lookup must not turn a valid session into a
+        // failed login (credential login would otherwise delete its cookie).
+        return result;
+      });
     });
   });
 }
