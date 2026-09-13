@@ -789,6 +789,55 @@ function playlistMutation(args) {
   throw new Error("未知歌单操作");
 }
 
+/** Replace a playlist's artwork. Two steps, mirroring the official web client:
+ *  nos/token/alloc hands back an upload token plus an object key, then the raw
+ *  image bytes are POSTed straight to the NOS host carrying that token. Unlike
+ *  every other write here that second request is neither weapi- nor eapi-encrypted
+ *  — it is a plain authenticated binary upload, which is why it goes out as
+ *  bodyBase64 rather than the text body every other call uses.
+ *
+ *  ext and Content-Type stay "jpg"/"image/jpeg" whatever the user picked: NOS is
+ *  only object storage, and the server re-encodes from docId when the cover is
+ *  applied, so the pair merely has to agree with itself. */
+function playlistCover(args) {
+  var playlistId = Number(args.playlistId);
+  if (!playlistId) throw new Error("缺少歌单 ID");
+  var imageBase64 = String(args.imageBase64 || "");
+  if (!imageBase64) throw new Error("图片为空");
+  var filename = String(args.filename || "") || "cover.jpg";
+  return weapi("nos/token/alloc", {
+    bucket: "yyimgs",
+    ext: "jpg",
+    filename: filename,
+    local: false,
+    nos_product: 0,
+    return_body: "{\"code\":200,\"size\":\"$(ObjectSize)\"}",
+    type: "other"
+  }).then(function (body) {
+    var result = body.result || {};
+    if (!result.objectKey || !result.token || !result.docId) {
+      throw new Error("获取上传凭证失败");
+    }
+    return call("http.request", {
+      url: "https://nosup-hz1.127.net/yyimgs/" + result.objectKey
+        + "?offset=0&complete=true&version=1.0",
+      method: "POST",
+      headers: {"x-nos-token": String(result.token), "Content-Type": "image/jpeg"},
+      bodyBase64: imageBase64,
+      timeoutMs: 30000
+    }).then(function (response) {
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error("图片上传失败 HTTP " + response.status);
+      }
+      return weapi("playlist/cover/update", {
+        id: playlistId, coverImgId: Number(result.docId)
+      });
+    });
+  }).then(function (body) {
+    return {success: Number(body.code || 0) === 200};
+  });
+}
+
 /** Listening report. The reference client sends two eapi weblogs to the client-log
  *  host under an os=osx jar: "startplay" puts the song in 最近播放, "play" credits the
  *  listening count. */
@@ -1120,6 +1169,7 @@ module.exports = {handlers: {
   scrobble: scrobble,
   like: like,
   playlistMutation: playlistMutation,
+  playlistCover: playlistCover,
   heartRecommendation: heartRecommendation,
   share: share,
   resolveStream: resolveStream,

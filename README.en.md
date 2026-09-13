@@ -20,8 +20,8 @@ Provided through QPlayer's capability-based ABI:
   playlists and so on)
 - Song, playlist, album and artist details
 - Stream resolution and lyrics, including word-level TTML lyrics from AMLL
-- Login, account profile, recent plays, likes, playlist mutations, scrobbling,
-  heart mode and sharing
+- Login, account profile, recent plays, likes, playlist mutations, playlist cover
+  replacement, scrobbling, heart mode and sharing
 
 Two plugin-owned entries, declared by the plugin and rendered by QPlayer:
 
