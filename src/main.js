@@ -9,11 +9,6 @@ var EAPI_HOST = "https://interfacepc.music.163.com";
 var WEB_HOST = "https://music.163.com";
 var CLIENT_LOG_HOST = "https://clientlog.music.163.com";
 var AMLL_HOST = "https://amlldb.bikonoo.com";
-// APP_CONF.checkToken: a separate, static token subscribe wants in the body. It rides
-// alongside the freshly fetched 易盾 token, not instead of it.
-var CHECK_TOKEN = "9ca17ae2e6ffcda170e2e6ee8af14fbabdb988f225b3868eb2c15a879b9a83d274a790ac8"
-  + "ff54a97b889d5d42af0feaec3b92af58cff99c470a7eafd88f75e839a9ea7c14e909da883e83fb692a3"
-  + "abdb6b92adee9e";
 var EAPI_UA = "NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)";
 var WEAPI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
   + " (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0";
@@ -194,7 +189,7 @@ function absorbNmtid(response, sentNmtid) {
   }
 }
 
-/** Run the provider-owned 易盾 probe in QPlayer's generic system-WebView surface.
+/** Run the provider-owned 易盾 probe in QPlayer's generic off-screen system WebView.
  * The reference implementation runs raw.I before getToken and never reuses tokens. */
 function checkTokenFor(options) {
   if (!options || !options.checkToken) return Promise.resolve("");
@@ -204,6 +199,7 @@ function checkTokenFor(options) {
     script: watchman.script(originUrl)
   }).then(watchman.tokenFromResult);
 }
+
 
 var anonymousToken = "";
 var anonymousRequest = null;
@@ -328,15 +324,16 @@ function eapi(path, data, options) {
           outputEncoding: "hex"
         });
       }).then(function (params) {
+        var url = (options.domain || EAPI_HOST) + "/eapi/" + path.slice(5);
+        var body = form({params: String(params).toUpperCase()});
         return call("http.request", {
-          url: (options.domain || EAPI_HOST) + "/eapi/" + path.slice(5), method: "POST",
+          url: url, method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded",
             "User-Agent": cookies.os === "osx" ? OSX_UA : EAPI_UA,
-            "Referer": WEB_HOST,
             "Cookie": headerCookie(header)
           },
-          body: form({params: String(params).toUpperCase()}),
+          body: body,
           timeoutMs: options.timeoutMs || 15000
         });
       }).then(function (response) {
@@ -768,9 +765,7 @@ function playlistMutation(args) {
   if (op === "subscribe" || op === "unsubscribe") {
     var subscribing = op === "subscribe";
     var path = subscribing ? "playlist/subscribe" : "playlist/unsubscribe";
-    var body = {id: Number(args.playlistId)};
-    if (subscribing) body.checkToken = CHECK_TOKEN;
-    return eapi("/api/" + path, body, {checkToken: true})
+    return eapi("/api/" + path, {id: Number(args.playlistId)}, {checkToken: true})
       .then(function (result) { return Number(result.code || 0) === 200; });
   }
   if (op === "add" || op === "remove") {
