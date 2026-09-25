@@ -4,7 +4,9 @@
 
 An independent, user-installed source plugin for QPlayer. It implements the public
 QPlayer JavaScript plugin ABI and keeps all NetEase-specific endpoints, request
-transforms, login handling and credentials outside QPlayer core.
+transforms, anti-cheat browser probing, login handling and credentials outside
+QPlayer core. The host only supplies a generic system-WebView execution surface
+guarded by the `webAuth` permission.
 
 This project is not affiliated with, endorsed by or partnered with NetEase Cloud
 Music. It distributes no audio, account credentials or copyrighted media. Users are

@@ -9,11 +9,6 @@ var EAPI_HOST = "https://interfacepc.music.163.com";
 var WEB_HOST = "https://music.163.com";
 var CLIENT_LOG_HOST = "https://clientlog.music.163.com";
 var AMLL_HOST = "https://amlldb.bikonoo.com";
-// 易盾 Watchman SDK runs inside QPlayer's platform system WebView so its browser
-// environment checks execute before it returns the anti-cheat token.
-var DUN_SCRIPT_URL = "https://acstatic-dun.126.net/tool.min.js";
-var WATCHMAN_PRODUCT_NUMBER = "YD00000558929251";
-var WATCHMAN_BUSINESS_ID = "bd5d2f973ef74cd2a61325a412ae54d9";
 // APP_CONF.checkToken: a separate, static token subscribe wants in the body. It rides
 // alongside the freshly fetched 易盾 token, not instead of it.
 var CHECK_TOKEN = "9ca17ae2e6ffcda170e2e6ee8af14fbabdb988f225b3868eb2c15a879b9a83d274a790ac8"
@@ -31,6 +26,7 @@ var ACCEPTED_CODES = [200, 201, 302, 400, 502, 800, 801, 802, 803];
 function call(method, args) { return qplayer.call(method, args || {}); }
 
 var xeapiTransport = require("./xeapi");
+var watchman = require("./watchman");
 
 function padLeft(value, width, fill) {
   value = String(value);
@@ -202,16 +198,15 @@ function absorbNmtid(response, sentNmtid) {
   }
 }
 
-/** Ask the host's real system WebView for a fresh 易盾 anti-cheat token. The
- * reference implementation runs raw.I before getToken and never reuses tokens. */
+/** Run the provider-owned 易盾 probe in QPlayer's generic system-WebView surface.
+ * The reference implementation runs raw.I before getToken and never reuses tokens. */
 function checkTokenFor(options) {
   if (!options || !options.checkToken) return Promise.resolve("");
-  return call("webAuth.watchmanToken", {
-    originUrl: WEB_HOST + "/",
-    scriptUrl: DUN_SCRIPT_URL,
-    productNumber: WATCHMAN_PRODUCT_NUMBER,
-    businessId: WATCHMAN_BUSINESS_ID
-  });
+  var originUrl = WEB_HOST + "/";
+  return call("webAuth.runScript", {
+    originUrl: originUrl,
+    script: watchman.script(originUrl)
+  }).then(watchman.tokenFromResult);
 }
 
 var anonymousToken = "";

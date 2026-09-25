@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "netease",
   "name": "网易云音乐",
-  "version": "0.4.9",
+  "version": "0.5.0",
   "apiVersion": "1.0",
-  "minHostVersion": "1.6.2",
+  "minHostVersion": "1.6.4",
   "entry": "src/main.js",
   "publisher": "TIMER-err",
   "capabilities": [
