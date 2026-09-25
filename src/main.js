@@ -120,8 +120,8 @@ var nmtidRetriesLeft = 3;
 
 var realIp = null;
 
-/** A random mainland-China client IP, fixed for the plugin's lifetime. Netease's risk
- *  control rejects sensitive ops ("当前环境异常" / 524) from addresses it can't place. */
+/** Stable synthetic mainland-China IP used only by the separate xeapi transport.
+ * Watchman-protected eapi/weapi requests must use the connection's real address. */
 function clientIp() {
   if (!realIp) {
     var firsts = [36, 39, 42, 58, 59, 60, 101, 106, 110, 111, 112, 113, 114, 115, 116, 117,
@@ -135,10 +135,6 @@ function clientIp() {
   return realIp;
 }
 
-function riskHeaders() {
-  var ip = clientIp();
-  return {"X-Real-IP": ip, "X-Forwarded-For": ip};
-}
 
 // Per-platform client identity, mirroring the reference implementation's osMap.
 var OS_MAP = {
@@ -334,12 +330,12 @@ function eapi(path, data, options) {
       }).then(function (params) {
         return call("http.request", {
           url: (options.domain || EAPI_HOST) + "/eapi/" + path.slice(5), method: "POST",
-          headers: Object.assign({
+          headers: {
             "Content-Type": "application/x-www-form-urlencoded",
             "User-Agent": cookies.os === "osx" ? OSX_UA : EAPI_UA,
             "Referer": WEB_HOST,
             "Cookie": headerCookie(header)
-          }, riskHeaders()),
+          },
           body: form({params: String(params).toUpperCase()}),
           timeoutMs: options.timeoutMs || 15000
         });
@@ -416,12 +412,12 @@ function weapiCall(path, data, token, options) {
         modulusHex: RSA_MODULUS, width: 256
       });
     }).then(function (encSecKey) {
-      var headers = Object.assign({
+      var headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": WEAPI_UA,
         "Referer": WEB_HOST, "Origin": WEB_HOST,
         "Cookie": cookieHeader(cookies, "weapi")
-      }, riskHeaders());
+      };
       if (token) headers["X-antiCheatToken"] = token;
       return call("http.request", {
         url: WEB_HOST + "/weapi/" + path.replace(/^\/?api\//, ""), method: "POST",
