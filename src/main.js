@@ -74,6 +74,145 @@ function secureUrl(value) {
   return value.indexOf("http://") === 0 ? "https://" + value.slice(7) : value;
 }
 
+var BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/** Read image dimensions without decoding the pixels or copying the multi-megabyte
+ * base64 payload. The host's picker admits these six formats. */
+function imageDimensions(encoded) {
+  var length = base64ByteLength(encoded);
+  var width;
+  var height;
+
+  // PNG: signature + IHDR width/height.
+  if (length >= 24 && imageByte(encoded, 0) === 0x89
+      && imageByte(encoded, 1) === 0x50 && imageByte(encoded, 2) === 0x4e
+      && imageByte(encoded, 3) === 0x47 && imageByte(encoded, 12) === 0x49
+      && imageByte(encoded, 13) === 0x48 && imageByte(encoded, 14) === 0x44
+      && imageByte(encoded, 15) === 0x52) {
+    return dimensions(readU32BE(encoded, 16), readU32BE(encoded, 20));
+  }
+
+  // GIF87a / GIF89a.
+  if (length >= 10 && imageByte(encoded, 0) === 0x47
+      && imageByte(encoded, 1) === 0x49 && imageByte(encoded, 2) === 0x46
+      && imageByte(encoded, 3) === 0x38
+      && (imageByte(encoded, 4) === 0x37 || imageByte(encoded, 4) === 0x39)
+      && imageByte(encoded, 5) === 0x61) {
+    return dimensions(readU16LE(encoded, 6), readU16LE(encoded, 8));
+  }
+
+  // BMP, including the old 12-byte OS/2 DIB header.
+  if (length >= 26 && imageByte(encoded, 0) === 0x42 && imageByte(encoded, 1) === 0x4d) {
+    var dibSize = readU32LE(encoded, 14);
+    if (dibSize === 12) {
+      return dimensions(readU16LE(encoded, 18), readU16LE(encoded, 20));
+    }
+    width = readU32LE(encoded, 18);
+    height = readU32LE(encoded, 22);
+    if (height > 0x7fffffff) height = 0x100000000 - height;
+    return dimensions(width, height);
+  }
+
+  // WebP: extended, lossless and lossy headers carry dimensions differently.
+  if (length >= 30 && imageByte(encoded, 0) === 0x52
+      && imageByte(encoded, 1) === 0x49 && imageByte(encoded, 2) === 0x46
+      && imageByte(encoded, 3) === 0x46 && imageByte(encoded, 8) === 0x57
+      && imageByte(encoded, 9) === 0x45 && imageByte(encoded, 10) === 0x42
+      && imageByte(encoded, 11) === 0x50) {
+    var chunk = String.fromCharCode(imageByte(encoded, 12), imageByte(encoded, 13),
+      imageByte(encoded, 14), imageByte(encoded, 15));
+    if (chunk === "VP8X") {
+      return dimensions(1 + readU24LE(encoded, 24), 1 + readU24LE(encoded, 27));
+    }
+    if (chunk === "VP8L" && imageByte(encoded, 20) === 0x2f) {
+      var b1 = imageByte(encoded, 21);
+      var b2 = imageByte(encoded, 22);
+      var b3 = imageByte(encoded, 23);
+      var b4 = imageByte(encoded, 24);
+      return dimensions(1 + b1 + ((b2 & 0x3f) << 8),
+        1 + (b2 >> 6) + (b3 << 2) + ((b4 & 0x0f) << 10));
+    }
+    if (chunk === "VP8 " && imageByte(encoded, 23) === 0x9d
+        && imageByte(encoded, 24) === 0x01 && imageByte(encoded, 25) === 0x2a) {
+      return dimensions(readU16LE(encoded, 26) & 0x3fff,
+        readU16LE(encoded, 28) & 0x3fff);
+    }
+  }
+
+  // JPEG: jump over metadata segments until a Start Of Frame marker.
+  if (length >= 4 && imageByte(encoded, 0) === 0xff && imageByte(encoded, 1) === 0xd8) {
+    var offset = 2;
+    while (offset + 1 < length) {
+      if (imageByte(encoded, offset) !== 0xff) {
+        offset++;
+        continue;
+      }
+      while (offset < length && imageByte(encoded, offset) === 0xff) offset++;
+      var marker = imageByte(encoded, offset++);
+      if (marker === 0xd9 || marker === 0xda) break;
+      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) continue;
+      if (offset + 1 >= length) break;
+      var segmentLength = readU16BE(encoded, offset);
+      if (segmentLength < 2 || offset + segmentLength > length) break;
+      if (marker >= 0xc0 && marker <= 0xcf
+          && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return dimensions(readU16BE(encoded, offset + 5),
+          readU16BE(encoded, offset + 3));
+      }
+      offset += segmentLength;
+    }
+  }
+  return null;
+}
+
+function dimensions(width, height) {
+  return width > 0 && height > 0 && width <= 100000 && height <= 100000
+    ? {width: width, height: height} : null;
+}
+
+function base64ByteLength(value) {
+  if (!value || value.length % 4 !== 0) return 0;
+  var padding = value.slice(-2) === "==" ? 2 : (value.slice(-1) === "=" ? 1 : 0);
+  return value.length / 4 * 3 - padding;
+}
+
+function imageByte(value, index) {
+  if (index < 0 || index >= base64ByteLength(value)) return -1;
+  var group = Math.floor(index / 3) * 4;
+  var a = BASE64_ALPHABET.indexOf(value.charAt(group));
+  var b = BASE64_ALPHABET.indexOf(value.charAt(group + 1));
+  var c = BASE64_ALPHABET.indexOf(value.charAt(group + 2));
+  var d = BASE64_ALPHABET.indexOf(value.charAt(group + 3));
+  if (a < 0 || b < 0) return -1;
+  switch (index % 3) {
+    case 0: return (a << 2) | (b >> 4);
+    case 1: return c < 0 ? -1 : ((b & 15) << 4) | (c >> 2);
+    default: return c < 0 || d < 0 ? -1 : ((c & 3) << 6) | d;
+  }
+}
+
+function readU16BE(value, offset) {
+  return imageByte(value, offset) * 256 + imageByte(value, offset + 1);
+}
+
+function readU16LE(value, offset) {
+  return imageByte(value, offset) + imageByte(value, offset + 1) * 256;
+}
+
+function readU24LE(value, offset) {
+  return readU16LE(value, offset) + imageByte(value, offset + 2) * 65536;
+}
+
+function readU32BE(value, offset) {
+  return ((imageByte(value, offset) * 256 + imageByte(value, offset + 1)) * 256
+    + imageByte(value, offset + 2)) * 256 + imageByte(value, offset + 3);
+}
+
+function readU32LE(value, offset) {
+  return imageByte(value, offset) + imageByte(value, offset + 1) * 256
+    + imageByte(value, offset + 2) * 65536 + imageByte(value, offset + 3) * 16777216;
+}
+
 function parseCookieHeader(header) {
   var result = {};
   String(header || "").split(";").forEach(function (part) {
@@ -417,7 +556,8 @@ function weapiCall(path, data, token, options) {
       };
       if (token) headers["X-antiCheatToken"] = token;
       return call("http.request", {
-        url: WEB_HOST + "/weapi/" + path.replace(/^\/?api\//, ""), method: "POST",
+        url: options.url || WEB_HOST + "/weapi/" + path.replace(/^\/?api\//, ""),
+        method: "POST",
         headers: headers,
         body: form({params: params, encSecKey: encSecKey}),
         timeoutMs: options.timeoutMs || 15000
@@ -778,21 +918,25 @@ function playlistMutation(args) {
   throw new Error("未知歌单操作");
 }
 
-/** Replace a playlist's artwork. Two steps, mirroring the official web client:
- *  nos/token/alloc hands back an upload token plus an object key, then the raw
- *  image bytes are POSTed straight to the NOS host carrying that token. Unlike
- *  every other write here that second request is neither weapi- nor eapi-encrypted
- *  — it is a plain authenticated binary upload, which is why it goes out as
- *  bodyBase64 rather than the text body every other call uses.
+/** Replace a playlist's artwork. The upload has three stages, mirroring the
+ * official web client: allocate a NOS object, upload the raw bytes, then ask
+ * /upload/img/op to turn that object into an image id. playlist/cover/update
+ * accepts that final image id, not the allocation's docId.
  *
- *  ext and Content-Type stay "jpg"/"image/jpeg" whatever the user picked: NOS is
- *  only object storage, and the server re-encodes from docId when the cover is
- *  applied, so the pair merely has to agree with itself. */
+ * The raw upload is neither weapi- nor eapi-encrypted, so it goes out as
+ * bodyBase64 rather than the text body every other call uses. The image operation
+ * receives source-pixel coordinates for the largest centred square; a fixed
+ * 300x300 rectangle would retain only the source image's upper-left corner. */
 function playlistCover(args) {
   var playlistId = Number(args.playlistId);
   if (!playlistId) throw new Error("缺少歌单 ID");
   var imageBase64 = String(args.imageBase64 || "");
   if (!imageBase64) throw new Error("图片为空");
+  var size = imageDimensions(imageBase64);
+  if (!size) throw new Error("无法读取图片尺寸");
+  var cropSize = Math.min(size.width, size.height);
+  var cropX = Math.floor((size.width - cropSize) / 2);
+  var cropY = Math.floor((size.height - cropSize) / 2);
   var filename = String(args.filename || "") || "cover.jpg";
   return weapi("nos/token/alloc", {
     bucket: "yyimgs",
@@ -818,8 +962,15 @@ function playlistCover(args) {
       if (response.status < 200 || response.status >= 300) {
         throw new Error("图片上传失败 HTTP " + response.status);
       }
-      return weapi("playlist/cover/update", {
-        id: playlistId, coverImgId: Number(result.docId)
+      var operationUrl = WEB_HOST + "/upload/img/op?id="
+        + encodeURIComponent(String(result.docId)) + "&op="
+        + cropX + "y" + cropY + "y" + cropSize + "y" + cropSize;
+      return weapi("", {}, {url: operationUrl}).then(function (image) {
+        var imageId = String(image.id || "");
+        if (!imageId) throw new Error("图片处理失败");
+        return weapi("playlist/cover/update", {
+          id: playlistId, coverImgId: imageId
+        });
       });
     });
   }).then(function (body) {

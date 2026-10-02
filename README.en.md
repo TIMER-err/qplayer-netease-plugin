@@ -23,7 +23,8 @@ Provided through QPlayer's capability-based ABI:
 - Song, playlist, album and artist details
 - Stream resolution and lyrics, including word-level TTML lyrics from AMLL
 - Login, account profile, recent plays, likes, playlist mutations, playlist cover
-  replacement, scrobbling, heart mode and sharing
+  replacement with centred cropping for non-square images, scrobbling, heart mode
+  and sharing
 
 Two plugin-owned entries, declared by the plugin and rendered by QPlayer:
 
