@@ -1222,10 +1222,32 @@ function listenTogether(args) {
   }
 }
 
+function neteaseQrUrl(key) {
+  return "https://music.163.com/login?codekey=" + encodeURIComponent(key);
+}
+
+function neteaseAppUrl(key) {
+  return "orpheus://openurl?url=" + encodeURIComponent(neteaseQrUrl(key));
+}
+
+function neteaseBegin(methodId) {
+  return eapi("/api/login/qrcode/unikey", {type: 3}).then(function (keyBody) {
+    var key = keyBody.unikey || keyBody.data && keyBody.data.unikey;
+    if (!key) throw new Error("未能获取二维码密钥");
+    return {
+      id: key, methodId: methodId, status: "waiting",
+      qrContent: neteaseQrUrl(key),
+      appUrl: neteaseAppUrl(key),
+      appLabel: "打开网易云",
+      expiresAtMs: Date.now() + 3 * 60 * 1000
+    };
+  });
+}
+
 function login(args) {
   switch (args.operation) {
-    case "methods":
-      return [
+    case "methods": {
+      var methods = [
         {id: "qr", type: "qr", label: "扫码", instructions: "请使用网易云音乐 App 扫码"},
         {id: "web", type: "web", label: "网页登录",
           instructions: "将在系统 WebView 中打开网易云官网。登录成功后，QPlayer 会自动读取登录 Cookie、验证账号并加密保存。",
@@ -1235,15 +1257,20 @@ function login(args) {
           instructions: "在 music.163.com 登录后按 F12，复制请求头中的 Cookie 值并粘贴到下方。Cookie 仅用于验证，成功后会加密保存。",
           credentialLabel: "Cookie 请求头"}
       ];
+      if (args && args.platform === "android") {
+        methods.unshift({
+          id: "orpheus", type: "app", label: "网易云一键登录",
+          appLabel: "打开网易云",
+          instructions: "将跳转到网易云音乐 App 确认登录。请先安装网易云音乐。"
+        });
+      }
+      return methods;
+    }
     case "begin": {
-      if (args.methodId !== "qr") throw new Error("该登录方式不需要创建挑战");
-      return eapi("/api/login/qrcode/unikey", {type: 3}).then(function (keyBody) {
-        var key = keyBody.unikey || keyBody.data && keyBody.data.unikey;
-        if (!key) throw new Error("未能获取二维码密钥");
-        return {id: key, methodId: "qr", status: "waiting",
-          qrContent: "https://music.163.com/login?codekey=" + encodeURIComponent(key),
-          expiresAtMs: Date.now() + 3 * 60 * 1000};
-      });
+      if (args.methodId !== "qr" && args.methodId !== "orpheus") {
+        throw new Error("该登录方式不需要创建挑战");
+      }
+      return neteaseBegin(args.methodId);
     }
     case "poll": {
       return eapi("/api/login/qrcode/client/login", {key: args.challengeId, type: 3}).then(function (result) {
