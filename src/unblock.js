@@ -68,13 +68,61 @@ function isMatch(resultName, resultArtist, wantName, wantArtist) {
 
 function gdstudio(songId) {
   if (!songId) return Promise.resolve(null);
-  return httpGet(GD_API + "?types=url&id=" + encodeURIComponent(String(songId)), {
+  return httpGet(GD_API + "?types=url&source=netease&id="
+      + encodeURIComponent(String(songId)) + "&br=320", {
     "User-Agent": "qplayer/1.0"
   }).then(function (body) {
     var obj = parseJson(body);
     var url = obj && obj.url;
-    return url ? String(url) : null;
+    return url ? String(url).replace(/\\/g, "") : null;
   }, function () { return null; });
+}
+
+function gdstudioOne(source, keyword, songName, artist) {
+  return httpGet(GD_API + "?types=search&source=" + source
+      + "&name=" + encodeURIComponent(keyword) + "&count=20&pages=1",
+      {"User-Agent": "qplayer/1.0"}).then(function (body) {
+    var list = parseJson(body);
+    if (!list || !list.length) return null;
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i] || {};
+      var names = item.artist;
+      var credited = Object.prototype.toString.call(names) === "[object Array]"
+          ? names.join(" ") : text(names);
+      if (!isMatch(item.name, credited, songName, artist)) continue;
+      if (!item.id) continue;
+      return httpGet(GD_API + "?types=url&source=" + source
+          + "&id=" + encodeURIComponent(String(item.id)) + "&br=320",
+          {"User-Agent": "qplayer/1.0"}).then(function (urlBody) {
+        var obj = parseJson(urlBody);
+        var url = obj && obj.url;
+        return url ? String(url).replace(/\\/g, "") : null;
+      });
+    }
+    return null;
+  }, function () { return null; });
+}
+
+function gdstudioSearch(keyword, songName, artist) {
+  if (!keyword) return Promise.resolve(null);
+  return firstUrl([
+    function () { return gdstudioOne("netease", keyword, songName, artist); },
+    function () { return gdstudioOne("joox", keyword, songName, artist); }
+  ]);
+}
+
+function songCredits(song) {
+  song = song || {};
+  var name = song.title || song.name || "";
+  var artist = song.artist || "";
+  if (!artist && song.artists && song.artists.length) {
+    var parts = [];
+    for (var i = 0; i < song.artists.length; i++) {
+      if (song.artists[i] && song.artists[i].name) parts.push(song.artists[i].name);
+    }
+    artist = parts.join(" ");
+  }
+  return {name: name, artist: artist};
 }
 
 function kuwoSearchRid(keyword, songName, artist) {
@@ -188,40 +236,51 @@ function firstUrl(promises) {
   return next(0);
 }
 
+function cacheableStream(url) {
+  return {
+    url: String(url),
+    headers: {}, mimeType: "",
+    expiresAtMs: Date.now() + 15 * 60 * 1000,
+    trial: false, cacheable: true
+  };
+}
+
+function officialPlayable(official) {
+  return !!(official && official.ok && official.stream
+      && !official.trial && official.stream.cacheable !== false);
+}
+
 function resolve(options) {
   var songId = options.songId;
   var official = options.official;
   var loadSong = options.songDetails;
   return enabled().then(function (on) {
     if (!on) {
-      if (official && official.ok) return official.stream;
+      if (officialPlayable(official)) return official.stream;
       throw new Error("歌曲暂无可用播放地址");
     }
     return firstUrl([
       function () { return gdstudio(songId); },
       function () {
         return loadSong().then(function (songs) {
-          var song = songs && songs[0] || {};
-          var name = song.title || song.name || "";
-          var artist = song.artist || "";
+          var credits = songCredits(songs && songs[0] || {});
+          var name = credits.name;
+          var artist = credits.artist;
+          if (!name) return null;
           var keyword = artist ? name + "-" + artist : name;
           return firstUrl([
             function () { return bodian(keyword, name, artist); },
-            function () { return kuwo(keyword, name, artist); }
+            function () { return kuwo(keyword, name, artist); },
+            function () { return gdstudioSearch(keyword, name, artist); }
           ]);
         }, function () { return null; });
       }
     ]).then(function (url) {
       if (url) {
         notify("已为该歌曲自动换源");
-        return {
-          url: String(url),
-          headers: {}, mimeType: "",
-          expiresAtMs: Date.now() + 15 * 60 * 1000,
-          trial: false, cacheable: true
-        };
+        return cacheableStream(url);
       }
-      if (official && official.ok) return official.stream;
+      if (officialPlayable(official)) return official.stream;
       throw new Error("歌曲暂无可用播放地址");
     });
   });
@@ -240,7 +299,7 @@ function ui(args) {
       icon: "lock_open",
       body: [
         {type: "switch", id: "enabled", label: "音源解锁", checked: on,
-          desc: "官方无版权或仅试听时，自动依次尝试其他音源。"}
+          desc: "官方无版权、仅试听或右键缓存失败时，自动换源并给出可下载直链。"}
       ]
     };
   });

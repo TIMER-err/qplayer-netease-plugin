@@ -59,6 +59,10 @@
     "search.kuwo.cn",
     "mobi.kuwo.cn",
     "bd-api.kuwo.cn",
+    "*.joox.com",
+    "*.tencentmusic.com",
+    "bd-er.kuwo.cn",
+    "*.bd-er.kuwo.cn",
     "*.kuwo.cn"
   ],
   "networkMethods": [

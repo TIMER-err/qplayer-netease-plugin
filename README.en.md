@@ -31,8 +31,9 @@ Two plugin-owned entries, declared by the plugin and rendered by QPlayer:
 - **Listen Together** (player entry) — the room protocol, synchronization policy,
   leadership rules and notifications are implemented inside this package; QPlayer
   provides only generic playback, queue, clipboard and toast services.
-- **Source unlock** (settings switch) — when a track is unplayable on NetEase, it
-  attempts to match a stream URL from another source.
+- **Source unlock** (settings switch) — when a track is unplayable or preview-only
+  on NetEase, match a full stream from another source. Right-click **Cache song**
+  uses the same unlocked URL, so greyed-out and trial tracks can be downloaded.
 
 Login credentials are stored only through QPlayer's namespaced encrypted vault.
 

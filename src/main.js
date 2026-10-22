@@ -1059,7 +1059,12 @@ function officialStream(args) {
 
 function resolveStream(args) {
   return officialStream(args).then(function (official) {
-    if (official.ok && !official.trial) return official.stream;
+    // 试听/不可缓存的官方链宿主右键「缓存歌曲」会直接丢掉。无版权、仅试听、
+    // 以及 VIP 灰歌一律走解锁,换到可下载的完整音轨。
+    if (official.ok && !official.trial && official.stream
+        && official.stream.cacheable !== false) {
+      return official.stream;
+    }
     return unblock.resolve({
       songId: args.id,
       official: official,
