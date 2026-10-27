@@ -1039,6 +1039,11 @@ function searchSongs(args) {
   });
 }
 
+function isNetworkFailure(error) {
+  var text = error && error.message ? String(error.message) : String(error || "");
+  return /timed?\s*out|timeout|connect|reset|unreachable|network|ECONN|ETIMEDOUT|socket/i.test(text);
+}
+
 function officialStream(args) {
   return xeapi("/api/song/enhance/player/url/v1", {
     ids: "[" + args.id + "]", level: args.quality || "exhigh", encodeType: "flac"
@@ -1054,16 +1059,20 @@ function officialStream(args) {
         trial: !!item.freeTrialInfo, cacheable: !item.freeTrialInfo
       }
     };
-  }, function () { return {ok: false}; });
+  }, function (error) {
+    return {ok: false, network: isNetworkFailure(error), error: error};
+  });
 }
 
 function resolveStream(args) {
   return officialStream(args).then(function (official) {
-    // 试听/不可缓存的官方链宿主右键「缓存歌曲」会直接丢掉。无版权、仅试听、
-    // 以及 VIP 灰歌一律走解锁,换到可下载的完整音轨。
     if (official.ok && !official.trial && official.stream
         && official.stream.cacheable !== false) {
       return official.stream;
+    }
+    // 超时/断网不能当成无版权去换源,模糊匹配在短歌名上很容易捞到别人的歌。
+    if (official.network) {
+      throw new Error("官方音源暂时连不上,请稍后重试");
     }
     return unblock.resolve({
       songId: args.id,
