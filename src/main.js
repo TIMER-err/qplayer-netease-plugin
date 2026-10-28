@@ -643,12 +643,16 @@ function artistDto(value, songs, albums) {
   };
 }
 
+function cloudSearch(query, type, offset, limit) {
+  return eapi("/api/cloudsearch/pc", {
+    s: query || "", type: type,
+    limit: Number(limit || 50), offset: Number(offset || 0), total: true
+  });
+}
+
 function searchPage(args, type, resultKey, mapper) {
   var offset = Number(args.cursor || 0);
-  return eapi("/api/cloudsearch/pc", {
-    s: args.query || "", type: type, limit: Number(args.limit || 50),
-    offset: offset, total: true
-  }).then(function (body) {
+  return cloudSearch(args.query || "", type, offset, args.limit || 50).then(function (body) {
     var result = body.result || {};
     var items = result[resultKey] || [];
     var total = Number(result[resultKey.slice(0, -1) + "Count"] || items.length);
@@ -1027,15 +1031,131 @@ function share(args) {
   return "https://music.163.com/#/" + kind + "?id=" + encodeURIComponent(String(args.id));
 }
 
-function searchSongs(args) {
-  var offset = Number(args.cursor || 0);
-  return eapi("/api/cloudsearch/pc", {
-    s: args.query || "", type: 1, limit: Number(args.limit || 50), offset: offset, total: true
-  }).then(function (body) {
+/**
+ * 同名覆盖极多时,网易云会把带别名的歌手挤到很后面。常见误写是把 h3R3 的
+ * 别名「刘清云」写成「刘青云」:后者对上的是演员条目,正确曲目掉到十几名之后,
+ * 第一页全是别人的「我又想你了」。近形字回退只在首页、且原结果对不上
+ * 「歌手+歌名」时触发;单独搜「刘青云」仍走演员条目。
+ */
+var ARTIST_NEAR_MISREADS = {
+  "刘青云": "刘清云",
+  "劉青雲": "劉清雲"
+};
+
+function compactText(value) {
+  return String(value || "").replace(/\s+/g, "");
+}
+
+function artistNamesOf(song) {
+  return (song.ar || song.artists || []).map(function (artist) {
+    return String((artist && artist.name) || "");
+  }).filter(Boolean);
+}
+
+function searchSongPage(query, offset, limit) {
+  return cloudSearch(query, 1, offset, limit).then(function (body) {
     var songs = body.result && body.result.songs || [];
     var total = body.result && Number(body.result.songCount || songs.length);
-    return {items: songs.map(songDto), nextCursor: offset + songs.length < total
-      ? String(offset + songs.length) : ""};
+    return {
+      items: songs.map(songDto),
+      nextCursor: offset + songs.length < total ? String(offset + songs.length) : "",
+      songs: songs
+    };
+  });
+}
+
+function rewriteNearMisreadQuery(query) {
+  var rewritten = String(query || "");
+  Object.keys(ARTIST_NEAR_MISREADS).forEach(function (wrong) {
+    if (rewritten.indexOf(wrong) < 0) return;
+    var right = ARTIST_NEAR_MISREADS[wrong];
+    rewritten = rewritten.split(wrong).join(right);
+    rewritten = rewritten.split(right + "的").join(right + " ");
+  });
+  return rewritten.replace(/\s+/g, " ").trim();
+}
+
+function songFitsQuery(song, query) {
+  var compact = compactText(query);
+  if (!compact) return true;
+  var title = compactText(song && (song.name || song.title) || "");
+  var names = artistNamesOf(song);
+  var i;
+  for (i = 0; i < names.length; i++) {
+    var artist = compactText(names[i]);
+    if (!artist) continue;
+    if (compact === artist) return true;
+    if (compact.indexOf(artist) >= 0 && title && compact.indexOf(title) >= 0) return true;
+  }
+  return false;
+}
+
+function songsFitQuery(songs, query) {
+  var i;
+  for (i = 0; i < (songs || []).length; i++) {
+    if (songFitsQuery(songs[i], query)) return true;
+  }
+  return false;
+}
+
+function songsHaveQueriedTitle(songs, query) {
+  var compact = compactText(query);
+  var i;
+  for (i = 0; i < (songs || []).length; i++) {
+    var title = compactText(songs[i] && (songs[i].name || songs[i].title) || "");
+    if (title && title.length >= 2 && compact.indexOf(title) >= 0) return true;
+  }
+  return false;
+}
+
+function isOnlyMisreadArtist(query) {
+  var compact = compactText(query);
+  var keys = Object.keys(ARTIST_NEAR_MISREADS);
+  var i;
+  for (i = 0; i < keys.length; i++) {
+    if (compact === compactText(keys[i])) return true;
+  }
+  return false;
+}
+
+function searchPageResult(page, rewritten) {
+  var cursor = page.nextCursor;
+  if (rewritten && cursor) cursor = "r:" + cursor;
+  return {items: page.items, nextCursor: cursor};
+}
+
+function searchSongs(args) {
+  var rawCursor = String(args.cursor || "");
+  var rewrittenPaging = rawCursor.indexOf("r:") === 0;
+  var offset = Number((rewrittenPaging ? rawCursor.slice(2) : rawCursor) || 0);
+  var limit = Number(args.limit || 50);
+  var query = args.query || "";
+  var rewritten = rewriteNearMisreadQuery(query);
+  if (!query || rewritten === query || isOnlyMisreadArtist(query)) {
+    return searchSongPage(query, offset, limit).then(function (page) {
+      return {items: page.items, nextCursor: page.nextCursor};
+    });
+  }
+  if (rewrittenPaging) {
+    return searchSongPage(rewritten, offset, limit).then(function (page) {
+      return searchPageResult(page, true);
+    });
+  }
+  if (offset) {
+    return searchSongPage(query, offset, limit).then(function (page) {
+      return {items: page.items, nextCursor: page.nextCursor};
+    });
+  }
+  return searchSongPage(query, 0, limit).then(function (page) {
+    if (songsFitQuery(page.songs, query)) {
+      return {items: page.items, nextCursor: page.nextCursor};
+    }
+    return searchSongPage(rewritten, 0, limit).then(function (alt) {
+      if (!alt.items.length || !songsHaveQueriedTitle(alt.songs, rewritten)) {
+        return {items: page.items, nextCursor: page.nextCursor};
+      }
+      return searchPageResult(alt, true);
+    });
   });
 }
 
